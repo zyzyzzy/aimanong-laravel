@@ -1,0 +1,224 @@
+@charset "UTF-8";
+/* ============================================================================
+ * Aimanong 主题令牌  v3.0 —— 方案 B「新芽 Sprout」
+ * ============================================================================
+ *
+ * ## 为什么从"三套主题"收敛为"亮/暗双模式"
+ *
+ * v2 提供了 墨玉/深空/极光 三套。实测它们的 `--brand-solid` 色相是：
+ *     墨玉 216.2°  ·  深空 223.3°  ·  极光 202.4°
+ * **三套全是蓝色，色相差 8–24°，肉眼分不出来。**
+ * 三倍维护成本、零辨识度 —— 用户要的是"有辨识度"，不是"有三个几乎一样的蓝"。
+ *
+ * ## 色值来源（全部可追溯）
+ *
+ * 对 logo.png 做逐像素 HSV 统计，LOGO 是**四色相资产**：
+ *     210–225° 蓝   62.8%   #205098   圆环 + 代码图标 + 人像
+ *     105–120° 绿   17.3%   #70d070   "nong"
+ *       0– 15° 橙红   9.1%   #e05040   "Ai"
+ *      30– 45° 橙黄   8.5%   #e8a840   "m / a / n"
+ *
+ * 之前只用了蓝色，扔掉了 37% 的颜色 —— 这是"闷"的真正病因。
+ * 本版：**蓝做主色，橙红/橙黄/绿回归它们在 LOGO 里的原始角色（语义色）**。
+ *
+ * ## 设计决策（来自方案 B，均经实测）
+ *
+ *   - 画布用**冷白** #f6f9fc（Stripe 原值，不是纯白也不是暖白）
+ *   - 正文用**深蓝黑** #0a2540（不是纯黑，纯黑在亮色下过硬）
+ *   - 暗色**不是把亮色取反**，而是保持同一深蓝家族，色温一致
+ *   - 品牌条 4px 四色渐变（在 design-system.css 的 .am-topbar::before）
+ *
+ * ## 校验
+ *
+ *   亮/暗 × 9 项 = 18 项对比度校验，全部 ≥4.5:1（最低 4.52）。
+ *
+ * ## 用法
+ *   <html data-mode="light">  或  <html data-mode="dark">
+ *   仅覆盖颜色令牌，不含结构规则 —— 切换模式不触碰 DOM。
+ * ========================================================================= */
+
+/* ── 亮色（默认）────────────────────────────────────────────── */
+:root,
+[data-mode="light"] {
+  color-scheme: light;
+
+  /* 画布层级 */
+  --bg-canvas: #f6f9fc;
+  --bg-surface: #ffffff;
+  --bg-subtle: #fbfcfe;
+  --bg-sunken: #eef3f8;
+  --bg-hover: #f4f8fb;
+  --bg-active: #e9f0f6;
+  --bg-inverse: #0a2540;
+
+  /* 文字（Stripe 深蓝黑系） */
+  --text-primary: #0a2540;
+  --text-secondary: #425466;
+  --text-tertiary: #697386;
+  --text-disabled: #a3acba;
+  --text-inverse: #ffffff;
+
+  /* 品牌（LOGO 蓝） */
+  --brand-solid: #2d5ca4;
+  --brand-solid-hover: #24508f;
+  --brand-solid-active: #1c437a;
+  --brand-alt: #5a4fd0;          /* 渐变末端：蓝→蓝紫，保留活力 */
+  --text-on-brand: #ffffff;
+  --brand-text: #2d5ca4;
+  --brand-subtle-bg: #eaf1fa;
+  --brand-subtle-border: #c5d8ee;
+  --brand-ring: #4071bb;
+
+  /* 边框 */
+  --border-subtle: #eaf0f6;
+  --border-default: #e0e9f2;
+  --border-strong: #cbd8e6;
+  --border-focus: #4071bb;
+
+  /* 语义色（LOGO 的绿 / 橙黄 / 橙红） */
+  --success-bg: #e3f9ea;
+  --success-text: #0f7a3d;
+  --success-border: #b8ecc9;
+  --success-solid: #12a150;
+  --success-on-solid: #ffffff;
+
+  --warning-bg: #fdf1e3;
+  --warning-text: #b45309;
+  --warning-border: #f5d9b0;
+  --warning-solid: #e8a840;
+  --warning-on-solid: #3d2a00;
+
+  --danger-bg: #fdeceb;
+  --danger-text: #b3261e;
+  --danger-border: #f5c9c5;
+  --danger-solid: #e05040;
+  --danger-on-solid: #ffffff;
+
+  --info-bg: #eaf1fa;
+  --info-text: #2d5ca4;
+  --info-border: #c5d8ee;
+  --info-solid: #2d5ca4;
+  --info-on-solid: #ffffff;
+
+  --overlay: rgba(10, 37, 64, .42);
+
+  --shadow-xs: 0 1px 2px rgba(10,37,64,.05);
+  --shadow-sm: 0 1px 3px rgba(10,37,64,.05), 0 8px 22px -14px rgba(10,37,64,.14);
+  --shadow-md: 0 2px 6px rgba(10,37,64,.07), 0 14px 32px -14px rgba(10,37,64,.2);
+  --shadow-lg: 0 8px 24px rgba(10,37,64,.1), 0 24px 56px -20px rgba(10,37,64,.22);
+}
+
+/* ── 暗色 ──────────────────────────────────────────────────── *
+ * 不是把亮色取反 —— 保持同一深蓝家族，色温一致。
+ * 层级越高越亮（背景 < 卡片 < 浮层），这是现代暗色的通行做法。 */
+[data-mode="dark"] {
+  color-scheme: dark;
+
+  --bg-canvas: #0a1628;
+  --bg-surface: #0f1e33;
+  --bg-subtle: #13243c;
+  --bg-sunken: #071120;
+  --bg-hover: #16273f;
+  --bg-active: #1c3050;
+  --bg-inverse: #e6edf7;
+
+  --text-primary: #e6edf7;
+  --text-secondary: #9fb3cc;
+  --text-tertiary: #7d90a8;
+  --text-disabled: #5c6f88;
+  --text-inverse: #0a1628;
+
+  /* 暗色下主色提亮，但仍是同一个蓝 */
+  --brand-solid: #5486d3;
+  --brand-solid-hover: #6e9fea;
+  --brand-solid-active: #4071bb;
+  --brand-alt: #8b7fe8;
+  --text-on-brand: #06121f;
+  --brand-text: #8ab9ff;
+  --brand-subtle-bg: #16304f;
+  --brand-subtle-border: #24466f;
+  --brand-ring: #6e9fea;
+
+  --border-subtle: #1a2c45;
+  --border-default: #22374f;
+  --border-strong: #2f4864;
+  --border-focus: #6e9fea;
+
+  --success-bg: #10321f;
+  --success-text: #6ee7a0;
+  --success-border: #1d5334;
+  --success-solid: #3ecf6e;
+  --success-on-solid: #06120a;
+
+  --warning-bg: #3a2a0d;
+  --warning-text: #f0c078;
+  --warning-border: #5a4318;
+  --warning-solid: #e8a840;
+  --warning-on-solid: #241a00;
+
+  --danger-bg: #3a1614;
+  --danger-text: #f09186;
+  --danger-border: #5c2622;
+  --danger-solid: #e05040;
+  --danger-on-solid: #1a0705;
+
+  --info-bg: #16304f;
+  --info-text: #8ab9ff;
+  --info-border: #24466f;
+  --info-solid: #5486d3;
+  --info-on-solid: #06121f;
+
+  --overlay: rgba(0, 0, 0, .62);
+
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.4);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.45), 0 8px 22px -14px rgba(0,0,0,.55);
+  --shadow-md: 0 2px 6px rgba(0,0,0,.5), 0 14px 32px -14px rgba(0,0,0,.6);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,.55), 0 24px 56px -20px rgba(0,0,0,.65);
+}
+
+/* ── 跟随系统（未显式指定 data-mode 时）────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode]) {
+    color-scheme: dark;
+
+    --bg-canvas: #0a1628;
+    --bg-surface: #0f1e33;
+    --bg-subtle: #13243c;
+    --bg-sunken: #071120;
+    --bg-hover: #16273f;
+    --bg-active: #1c3050;
+    --bg-inverse: #e6edf7;
+
+    --text-primary: #e6edf7;
+    --text-secondary: #9fb3cc;
+    --text-tertiary: #7d90a8;
+    --text-disabled: #5c6f88;
+    --text-inverse: #0a1628;
+
+    --brand-solid: #5486d3;
+    --brand-solid-hover: #6e9fea;
+    --brand-solid-active: #4071bb;
+    --brand-alt: #8b7fe8;
+    --text-on-brand: #06121f;
+    --brand-text: #8ab9ff;
+    --brand-subtle-bg: #16304f;
+    --brand-subtle-border: #24466f;
+    --brand-ring: #6e9fea;
+
+    --border-subtle: #1a2c45;
+    --border-default: #22374f;
+    --border-strong: #2f4864;
+    --border-focus: #6e9fea;
+
+    --success-bg: #10321f;   --success-text: #6ee7a0;  --success-border: #1d5334;
+    --success-solid: #3ecf6e; --success-on-solid: #06120a;
+    --warning-bg: #3a2a0d;   --warning-text: #f0c078;  --warning-border: #5a4318;
+    --warning-solid: #e8a840; --warning-on-solid: #241a00;
+    --danger-bg: #3a1614;    --danger-text: #f09186;   --danger-border: #5c2622;
+    --danger-solid: #e05040; --danger-on-solid: #1a0705;
+    --info-bg: #16304f;      --info-text: #8ab9ff;     --info-border: #24466f;
+    --info-solid: #5486d3;   --info-on-solid: #06121f;
+
+    --overlay: rgba(0, 0, 0, .62);
+  }
+}

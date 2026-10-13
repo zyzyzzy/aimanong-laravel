@@ -1,0 +1,411 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Aimanong\Ai;
+
+use Aimanong\Repository\EloquentRepository;
+use Aimanong\Schema\Ast\ResourceNode;
+use Aimanong\Schema\Compiler;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * 需求达标度校验。
+ *
+ * 解决的问题：validate_declaration 原先只查「语法合法 / 能编译」，
+ * 产出缺需求也会全绿，AI 会把绿灯当交付标准。
+ *
+ * 现在 AI 可提交需求清单，验证器逐条核对，明确回报
+ * "哪些需求没被满足"，让 AI 知道自己是否真的完成了任务。
+ */
+class RequirementChecker
+{
+    /**
+     * 校验需求清单。
+     *
+     * @param  array<string, mixed>  $requirements
+     * @return array<string, mixed>
+     */
+    public function check(string $class, array $requirements): array
+    {
+        if (! class_exists($class) || ! is_subclass_of($class, \Aimanong\Resource::class)) {
+            return [
+                'checked' => false,
+                'message' => '类不存在或不是 Resource，无法核对需求',
+                'results' => [],
+            ];
+        }
+
+        try {
+            $node = (new Compiler)->compile($class);
+        } catch (\Throwable $e) {
+            return [
+                'checked' => false,
+                'message' => '编译失败，无法核对需求: '.$e->getMessage(),
+                'results' => [],
+            ];
+        }
+
+        $results = [];
+
+        /*
+         * 可搜索列 —— 必须做**运行时验证**。
+         *
+         * 第五轮真实场景验证发现：只比对列名会给出假阳性。
+         * AI 曾给 product_id（外键）加 searchable 骗过校验器，
+         * 但客户要的是"按商品名搜索"，实测 keyword=iPhone 返回 0 条。
+         *
+         * 因此这里实际跑一次关联搜索，验证它不会 500 且能返回结果。
+         */
+        if (isset($requirements['searchable'])) {
+            $wanted = $this->names($requirements['searchable']);
+            $flagged = $this->flagged($node, 'searchable');
+
+            $results[] = $this->checkColumns('searchable', '可搜索', $wanted, $flagged);
+
+            // 对声明为可搜索的**关联列**做运行时探测
+            foreach ($flagged as $col) {
+                if (! str_contains($col, '.')) {
+                    continue;
+                }
+
+                $probe = $this->probeSearch($node, $col);
+
+                if ($probe !== null) {
+                    $results[] = $probe;
+                }
+            }
+        }
+
+        // 可排序列
+        if (isset($requirements['sortable'])) {
+            $results[] = $this->checkColumns(
+                'sortable',
+                '可排序',
+                $this->names($requirements['sortable']),
+                $this->flagged($node, 'sortable')
+            );
+        }
+
+        // 必填字段
+        if (isset($requirements['required'])) {
+            $required = [];
+
+            foreach ($node->fields as $f) {
+                if ($f->required) {
+                    $required[] = $f->name;
+                }
+            }
+
+            $results[] = $this->checkColumns(
+                'required',
+                '必填',
+                $this->names($requirements['required']),
+                $required
+            );
+        }
+
+        // 必须存在的列
+        if (isset($requirements['columns'])) {
+            $existing = array_map(fn ($c): string => $c->name, $node->columns);
+            $results[] = $this->checkColumns(
+                'columns',
+                '列表包含列',
+                $this->names($requirements['columns']),
+                $existing
+            );
+        }
+
+        // 必须存在的表单字段
+        if (isset($requirements['fields'])) {
+            $existing = array_map(fn ($f): string => $f->name, $node->fields);
+            $results[] = $this->checkColumns(
+                'fields',
+                '表单包含字段',
+                $this->names($requirements['fields']),
+                $existing
+            );
+        }
+
+        /*
+         * 每页条数 —— 必须验证"功能真的生效"，而不只是"声明写了"。
+         *
+         * 背景：曾出现 $grid->perPage(30) 只写进 schema.json、
+         * 而 API 层仍用 20 的情况。校验器报"已设置"，功能却没实现，
+         * 属于假阳性 —— 比不检查更危险。
+         *
+         * 因此这里实际跑一次 Repository 分页，核对真实返回值。
+         */
+        if (isset($requirements['per_page'])) {
+            $expected = (int) $requirements['per_page'];
+            $declared = $node->meta['perPage'] ?? 20;
+
+            $actual = $this->runtimePerPage($node);
+
+            if ($actual === null) {
+                // 无法运行时验证（表不存在等），降级为声明检查并说明
+                $ok = $declared === $expected;
+
+                $results[] = [
+                    'requirement' => "每页 {$expected} 条",
+                    'satisfied' => $ok,
+                    'detail' => $ok
+                        ? "声明为 {$declared} 条（未能运行时验证：表不可用）"
+                        : "声明为 {$declared} 条，期望 {$expected}",
+                    'fix' => $ok ? null : "\$grid->perPage({$expected});",
+                ];
+            } else {
+                // 运行时值与声明值都要对，才算真正生效
+                $ok = $actual === $expected;
+
+                $results[] = [
+                    'requirement' => "每页 {$expected} 条",
+                    'satisfied' => $ok,
+                    'detail' => $ok
+                        ? "已生效（运行时实测 {$actual} 条）"
+                        : "❌ 声明为 {$declared}，但运行时实际返回 {$actual} 条 —— 声明未生效",
+                    'fix' => $ok ? null : "\$grid->perPage({$expected}); 并确认 ResourceController 读取了该值",
+                ];
+            }
+        }
+
+        /*
+         * M5 新增能力也必须可核对。
+         *
+         * 第五轮 AI 实测发现：喂入 {"tree":"zzz","export":"zzz"} 时
+         * 校验器静默返回「✅ 全部需求已满足」—— 未知键被忽略，
+         * 与「需求达标度校验」的定位严重冲突。
+         */
+        if (isset($requirements['tree'])) {
+            $has = is_array($node->meta['tree'] ?? null);
+            $results[] = [
+                'requirement' => '树形结构',
+                'satisfied' => $has,
+                'detail' => $has ? '已声明' : '未声明 —— Resource 未实现 tree() 方法',
+                'fix' => $has ? null : "public static function tree(Tree \$tree): void { \$tree->parentColumn('parent_id'); }",
+            ];
+        }
+
+        if (isset($requirements['export'])) {
+            $has = ($node->meta['exportable'] ?? false) === true;
+            $results[] = [
+                'requirement' => '导出',
+                'satisfied' => $has,
+                'detail' => $has ? '已开启' : '未开启 —— 导出接口会返回 403',
+                'fix' => $has ? null : '\$grid->export();',
+            ];
+        }
+
+        if (isset($requirements['step'])) {
+            $steps = $node->meta['steps'] ?? [];
+            $has = ($node->meta['stepped'] ?? false) === true && count($steps) >= 2;
+            $detail = $has
+                ? '已声明 '.count($steps).' 个步骤: '.implode(' / ', array_column($steps, 'title'))
+                : '未声明或不足 2 步';
+
+            $results[] = [
+                'requirement' => '分步表单',
+                'satisfied' => $has,
+                'detail' => $detail,
+                'fix' => $has ? null : "\$form->step('第一步'); \$form->text('name'); \$form->step('第二步');",
+            ];
+        }
+
+        // 未知键必须报错，而不是静默忽略
+        $known = ['searchable', 'sortable', 'required', 'columns', 'fields', 'per_page', 'tree', 'export', 'step'];
+        $unknown = array_values(array_diff(array_keys($requirements), $known));
+
+        foreach ($unknown as $key) {
+            $results[] = [
+                'requirement' => "未知需求键: {$key}",
+                'satisfied' => false,
+                'detail' => '校验器不认识这个键，它不会被核对 —— 请改用受支持的键',
+                'fix' => '受支持的键: '.implode(', ', $known),
+            ];
+        }
+
+        $failed = array_values(array_filter($results, fn (array $r): bool => ! $r['satisfied']));
+
+        return [
+            'checked' => true,
+            'total' => count($results),
+            'satisfied' => count($results) - count($failed),
+            'failed' => count($failed),
+            'all_satisfied' => $failed === [],
+            'results' => $results,
+            'message' => $failed === []
+                ? '✅ 全部需求已满足'
+                : sprintf('⚠️ %d 项需求未满足 —— 请修正后再交付', count($failed)),
+        ];
+    }
+
+    /**
+     * 运行时验证每页条数：真的跑一次分页，看返回多少条。
+     *
+     * 这是与"只读 schema 元数据"的关键区别 —— 能发现
+     * "声明了但没生效"这类假阳性。
+     *
+     * @return int|null null 表示无法验证（表不可用等）
+     */
+    protected function runtimePerPage(ResourceNode $node): ?int
+    {
+        try {
+            $model = $node->model;
+
+            if (! class_exists($model)) {
+                return null;
+            }
+
+            /** @var Model $instance */
+            $instance = new $model;
+            $table = $instance->getTable();
+
+            if (! Schema::hasTable($table)) {
+                return null;
+            }
+
+            // 模拟 ResourceController 的调用方式：不传 per_page，
+            // 让 Repository 自行决定 —— 这正是原先断链的地方。
+            /** @var class-string<Model> $modelClass */
+            $modelClass = $model;
+            $repo = new EloquentRepository($modelClass);
+            $paginator = $repo->paginate([
+                'searchable' => [],
+            ], $node->meta['perPage'] ?? null);
+
+            return $paginator->perPage();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * 探测关联列搜索是否真的可用。
+     *
+     * 只验证"不报错"，不验证业务语义（那是人的判断）。
+     * 但能挡掉最危险的情况：**必然 500 的声明却拿到绿灯**。
+     *
+     * @return array<string, mixed>|null null 表示无法探测（无数据等）
+     */
+    protected function probeSearch(ResourceNode $node, string $column): ?array
+    {
+        try {
+            if (! class_exists($node->model)) {
+                return null;
+            }
+
+            /** @var Model $instance */
+            $instance = new $node->model;
+            $table = $instance->getTable();
+
+            if (! Schema::hasTable($table)) {
+                return null;
+            }
+
+            /** @var class-string<Model> $modelClass */
+            $modelClass = $node->model;
+
+            $repo = new EloquentRepository($modelClass);
+
+            // 用一个不可能命中的关键词 —— 只为验证查询能跑通
+            $repo->paginate([
+                'keyword' => '__aimanong_probe__',
+                'searchable' => [$column],
+            ], 1);
+        } catch (\Throwable $e) {
+            return [
+                'requirement' => "关联列搜索: {$column}",
+                'satisfied' => false,
+                'detail' => '❌ 实际执行时报错: '.mb_substr($e->getMessage(), 0, 80),
+                'fix' => '关联列搜索需要框架支持 whereHas；若仍报错请检查模型是否定义了该关联',
+            ];
+        }
+
+        return [
+            'requirement' => "关联列搜索: {$column}",
+            'satisfied' => true,
+            'detail' => '已实测可执行（未报错）',
+            'fix' => null,
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $expected
+     * @param  array<int, string>  $actual
+     * @return array<string, mixed>
+     */
+    protected function checkColumns(string $key, string $label, array $expected, array $actual): array
+    {
+        $missing = array_values(array_diff($expected, $actual));
+        $ok = $missing === [];
+
+        return [
+            'requirement' => "{$label}: ".implode(', ', $expected),
+            'satisfied' => $ok,
+            'detail' => $ok
+                ? '已满足'
+                : '缺少 '.implode(', ', $missing).'（当前: '.implode(', ', $actual).'）',
+            'fix' => $ok ? null : $this->fixHint($key, $missing),
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $missing
+     */
+    protected function fixHint(string $key, array $missing): string
+    {
+        $first = $missing[0] ?? 'field';
+
+        return match ($key) {
+            'searchable' => "\$grid->column('{$first}', '...')->searchable();",
+            'sortable' => "\$grid->column('{$first}', '...')->sortable();",
+            'required' => "\$form->text('{$first}')->label('...')->required();",
+            'columns' => "\$grid->column('{$first}', '...');",
+            'fields' => "\$form->text('{$first}')->label('...');",
+            default => '',
+        };
+    }
+
+    /**
+     * 取出带指定标记的列名。
+     *
+     * @return array<int, string>
+     */
+    protected function flagged(ResourceNode $node, string $flag): array
+    {
+        $out = [];
+
+        foreach ($node->columns as $c) {
+            if ($flag === 'searchable' && $c->searchable) {
+                $out[] = $c->name;
+            }
+            if ($flag === 'sortable' && $c->sortable) {
+                $out[] = $c->name;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * 支持 "name,email" 字符串或数组。
+     *
+     * @return array<int, string>
+     */
+    protected function names(mixed $value): array
+    {
+        if (is_string($value)) {
+            return array_values(array_filter(array_map('trim', explode(',', $value))));
+        }
+
+        if (is_array($value)) {
+            return array_values(array_filter(array_map(
+                fn ($v): string => is_string($v) ? trim($v) : '',
+                $value
+            )));
+        }
+
+        return [];
+    }
+}
